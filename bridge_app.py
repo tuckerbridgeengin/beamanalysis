@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import re
 
 # ==========================================
-#  CORE ANALYSIS ENGINE (Unchanged Logic)
+#  CORE ANALYSIS ENGINE
 # ==========================================
 class BridgeBeam:
     def __init__(self, L_ft, E_ksi, supports_ft, num_elements=200):
@@ -97,15 +97,14 @@ class BridgeBeam:
         
         truck_positions = np.arange(start_pos, end_pos, self.dx)
         
-        # Progress Bar
+        # Streamlit Progress Bar
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
         total_steps = len(truck_positions)
 
         for i_step, front_axle_x in enumerate(truck_positions):
-            # Update progress every 10% to save time
-            if i_step % (total_steps // 10) == 0:
+            # Update progress only every 10% to save time
+            if i_step % max(1, (total_steps // 10)) == 0:
                 progress_bar.progress(i_step / total_steps)
                 status_text.text(f"Simulating truck position {i_step}/{total_steps}...")
 
@@ -178,8 +177,9 @@ class BridgeBeam:
         fig, axs = plt.subplots(4, 1, figsize=(10, 16), sharex=False, 
                                 gridspec_kw={'height_ratios': [3, 3, 3, 1]})
         
-        # Share X axes
-        axs[0].get_shared_x_axes().join(axs[0], axs[1], axs[2])
+        # --- FIXED: Modern Matplotlib Syntax ---
+        axs[0].sharex(axs[1])
+        axs[1].sharex(axs[2])
 
         for i in range(3):
             for sx in self.supports:
@@ -274,7 +274,6 @@ def parse_stiffness(text, total_length):
             end = total_length if end_str == 'end' else float(end_str)
             segments.append((start, end, val))
         else:
-            # Fallback csv
             try:
                 parts = [x.strip() for x in line.split(',')]
                 if len(parts) == 3:
@@ -285,7 +284,6 @@ def parse_stiffness(text, total_length):
     return segments
 
 if run_btn:
-    # 1. Parse Supports
     try:
         supports = sorted([float(x.strip()) for x in supports_str.split(',')])
         L_total = supports[-1]
@@ -297,7 +295,6 @@ if run_btn:
         st.error("Bridge length must be > 0")
         st.stop()
 
-    # 2. Parse Truck
     truck_config = []
     try:
         for line in truck_input.split('\n'):
@@ -313,7 +310,6 @@ if run_btn:
         st.error("Please define at least one axle.")
         st.stop()
 
-    # 3. Parse Stiffness
     segments = parse_stiffness(stiff_input, L_total)
     if not segments:
         st.warning("No valid stiffness segments found. Using default I=50,000.")
@@ -325,14 +321,12 @@ if run_btn:
                 return val
         return segments[0][2]
 
-    # 4. Run Analysis
     st.info(f"Analyzing {L_total}ft bridge...")
     
     bridge = BridgeBeam(L_total, E_ksi, supports, num_elements=200)
     bridge.set_stiffness_profile(get_I)
     bridge.analyze_truck(truck_config)
     
-    # 5. Show Results
     fig = bridge.plot_envelopes()
     st.pyplot(fig)
     st.success("Analysis Complete!")
