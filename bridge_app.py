@@ -1,11 +1,10 @@
+import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import tkinter as tk
-from tkinter import ttk, messagebox
-import re 
+import re
 
 # ==========================================
-#  CORE ANALYSIS ENGINE
+#  CORE ANALYSIS ENGINE (Unchanged Logic)
 # ==========================================
 class BridgeBeam:
     def __init__(self, L_ft, E_ksi, supports_ft, num_elements=200):
@@ -44,18 +43,11 @@ class BridgeBeam:
         self.I_func = I_in4_function
 
     def _get_element_stiffness(self, x_start_ft, x_end_ft):
-        # 1. Calculate Lengths
         L_ft = x_end_ft - x_start_ft
-        L_in = L_ft * 12.0  # Convert to inches
-        
-        # 2. Get Inertia at Midpoint
+        L_in = L_ft * 12.0 
         x_mid_ft = (x_start_ft + x_end_ft) / 2.0
         I_val = self.I_func(x_mid_ft)
-        
-        # 3. Define L for the matrix (The error was here previously)
         L = L_in 
-        
-        # 4. Construct Stiffness Matrix (Standard Beam Element)
         k = (self.E * I_val / L**3) * np.array([
             [12, 6*L, -12, 6*L],
             [6*L, 4*L**2, -6*L, 2*L**2],
@@ -78,7 +70,8 @@ class BridgeBeam:
 
     def analyze_truck(self, truck_config):
         if self.I_func is None:
-            raise ValueError("Stiffness profile not defined.")
+            st.error("Stiffness profile not defined.")
+            return
 
         K_global = self._build_global_stiffness()
 
@@ -95,7 +88,7 @@ class BridgeBeam:
         try:
             K_inv = np.linalg.inv(K_ff)
         except np.linalg.LinAlgError:
-            messagebox.showerror("Error", "Structure is unstable! Check supports.")
+            st.error("Structure is unstable! Check supports.")
             return
 
         truck_length = max([axle[1] for axle in truck_config])
@@ -104,7 +97,18 @@ class BridgeBeam:
         
         truck_positions = np.arange(start_pos, end_pos, self.dx)
         
+        # Progress Bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        total_steps = len(truck_positions)
+
         for i_step, front_axle_x in enumerate(truck_positions):
+            # Update progress every 10% to save time
+            if i_step % (total_steps // 10) == 0:
+                progress_bar.progress(i_step / total_steps)
+                status_text.text(f"Simulating truck position {i_step}/{total_steps}...")
+
             F_global = np.zeros(self.n_dof)
             is_truck_on_bridge = False
             
@@ -165,14 +169,17 @@ class BridgeBeam:
             self.results['min_moment'] = np.minimum(self.results['min_moment'], moments)
             self.results['max_shear'] = np.maximum(self.results['max_shear'], shears)
             self.results['min_shear'] = np.minimum(self.results['min_shear'], shears)
+        
+        progress_bar.empty()
+        status_text.empty()
 
     def plot_envelopes(self):
         x = self.nodes
         fig, axs = plt.subplots(4, 1, figsize=(10, 16), sharex=False, 
                                 gridspec_kw={'height_ratios': [3, 3, 3, 1]})
         
-        axs[0].sharex(axs[1])
-        axs[1].sharex(axs[2])
+        # Share X axes
+        axs[0].get_shared_x_axes().join(axs[0], axs[1], axs[2])
 
         for i in range(3):
             for sx in self.supports:
@@ -219,149 +226,113 @@ class BridgeBeam:
         table.scale(1, 2.0)
 
         plt.tight_layout()
-        plt.show()
+        return fig
 
 # ==========================================
-#  GUI INTERFACE
+#  STREAMLIT INTERFACE
 # ==========================================
 
-class BridgeApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Bridge Analysis Tool")
-        self.root.geometry("600x800")
+st.set_page_config(page_title="Bridge Analyzer", layout="wide")
 
-        # --- 1. Geometry Section ---
-        lbl_frame_geo = ttk.LabelFrame(root, text="Geometry & Material")
-        lbl_frame_geo.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(lbl_frame_geo, text="Modulus E [ksi]:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.ent_E = ttk.Entry(lbl_frame_geo)
-        self.ent_E.insert(0, "3600")
-        self.ent_E.grid(row=0, column=1, padx=5, pady=2)
+st.title("Bridge Analysis Tool")
+st.markdown("Define your bridge geometry, supports, and truck load to calculate envelopes.")
 
-        ttk.Label(lbl_frame_geo, text="Supports [ft] (comma sep):").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.ent_supports = ttk.Entry(lbl_frame_geo)
-        self.ent_supports.insert(0, "0, 100, 200")
-        self.ent_supports.grid(row=1, column=1, padx=5, pady=2)
-        
-        ttk.Label(lbl_frame_geo, text="(Total Length will be the last support location)").grid(row=2, column=0, columnspan=2, sticky="w", padx=5)
+# --- SIDEBAR INPUTS ---
+with st.sidebar:
+    st.header("1. Material & Geometry")
+    E_ksi = st.number_input("Modulus of Elasticity (E) [ksi]", value=3600.0)
+    
+    supports_str = st.text_input("Support Locations [ft] (comma sep)", value="0, 100, 200")
+    
+    st.header("2. Beam Stiffness")
+    stiff_input = st.text_area("Stiffness Segments (I [in^4])", 
+                               value="50000 from 0 to 75\n120000 from 75 to 125\n50000 from 125 to end",
+                               height=100)
+    st.caption("Format: 'VALUE from START to END'")
+    
+    st.header("3. Truck Load")
+    truck_input = st.text_area("Axles (Weight [kips], Dist [ft])",
+                               value="8.0, 0.0\n32.0, 14.0\n32.0, 28.0",
+                               height=100)
 
-        # --- 2. Stiffness Section ---
-        lbl_frame_stiff = ttk.LabelFrame(root, text="Beam Stiffness (Moment of Inertia)")
-        lbl_frame_stiff.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(lbl_frame_stiff, text="Define I [in^4] segments (one per line):").pack(anchor="w", padx=5)
-        ttk.Label(lbl_frame_stiff, text="Format: 'VALUE from START to END'", font=("Arial", 8, "italic")).pack(anchor="w", padx=5)
-        
-        self.txt_stiff = tk.Text(lbl_frame_stiff, height=6, width=60)
-        self.txt_stiff.pack(padx=5, pady=5)
-        
-        # Default Example
-        default_stiff = "50000 from 0 to 75\n120000 from 75 to 125\n50000 from 125 to end"
-        self.txt_stiff.insert("1.0", default_stiff)
+    run_btn = st.button("Run Analysis", type="primary")
 
-        # --- 3. Truck Load Section ---
-        lbl_frame_load = ttk.LabelFrame(root, text="Truck Configuration")
-        lbl_frame_load.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(lbl_frame_load, text="Define Axles (Weight [kips], Dist from Front [ft])").pack(anchor="w", padx=5)
-        self.txt_truck = tk.Text(lbl_frame_load, height=5, width=60)
-        self.txt_truck.pack(padx=5, pady=5)
-        self.txt_truck.insert("1.0", "8.0, 0.0\n32.0, 14.0\n32.0, 28.0")
+# --- MAIN LOGIC ---
 
-        # --- Run Button ---
-        btn_run = ttk.Button(root, text="Run Analysis", command=self.run_analysis)
-        btn_run.pack(pady=20, ipadx=10, ipady=5)
-        
-        self.status_lbl = ttk.Label(root, text="Ready.")
-        self.status_lbl.pack()
+def parse_stiffness(text, total_length):
+    segments = []
+    lines = text.strip().split('\n')
+    pattern = re.compile(r"([\d\.]+).*?([\d\.]+).*?([\d\.]+|end)", re.IGNORECASE)
+    
+    for line in lines:
+        if not line.strip(): continue
+        match = pattern.search(line)
+        if match:
+            val = float(match.group(1))
+            start = float(match.group(2))
+            end_str = match.group(3).lower()
+            end = total_length if end_str == 'end' else float(end_str)
+            segments.append((start, end, val))
+        else:
+            # Fallback csv
+            try:
+                parts = [x.strip() for x in line.split(',')]
+                if len(parts) == 3:
+                    end_val = total_length if parts[2].lower() == 'end' else float(parts[2])
+                    segments.append((float(parts[1]), end_val, float(parts[0])))
+            except:
+                pass
+    return segments
 
-    def parse_stiffness_text(self, text, total_length):
-        segments = []
-        lines = text.strip().split('\n')
-        pattern = re.compile(r"([\d\.]+).*?([\d\.]+).*?([\d\.]+|end)", re.IGNORECASE)
-        
-        for line in lines:
+if run_btn:
+    # 1. Parse Supports
+    try:
+        supports = sorted([float(x.strip()) for x in supports_str.split(',')])
+        L_total = supports[-1]
+    except:
+        st.error("Invalid supports format.")
+        st.stop()
+
+    if L_total <= 0:
+        st.error("Bridge length must be > 0")
+        st.stop()
+
+    # 2. Parse Truck
+    truck_config = []
+    try:
+        for line in truck_input.split('\n'):
             if not line.strip(): continue
-            match = pattern.search(line)
-            if match:
-                val = float(match.group(1))
-                start = float(match.group(2))
-                end_str = match.group(3).lower()
-                end = total_length if end_str == 'end' else float(end_str)
-                segments.append((start, end, val))
-            else:
-                try:
-                    parts = [x.strip() for x in line.split(',')]
-                    if len(parts) == 3:
-                        end_val = total_length if parts[2].lower() == 'end' else float(parts[2])
-                        segments.append((float(parts[1]), end_val, float(parts[0])))
-                except:
-                    print(f"Skipping invalid line: {line}")
-        return segments
+            parts = line.split(',')
+            if len(parts) == 2:
+                truck_config.append((float(parts[0]), float(parts[1])))
+    except:
+        st.error("Invalid truck format.")
+        st.stop()
 
-    def run_analysis(self):
-        try:
-            self.status_lbl.config(text="Processing inputs...")
-            self.root.update()
+    if not truck_config:
+        st.error("Please define at least one axle.")
+        st.stop()
 
-            E = float(self.ent_E.get())
-            
-            sup_str = self.ent_supports.get()
-            supports = sorted([float(x.strip()) for x in sup_str.split(',')])
-            if not supports:
-                messagebox.showerror("Error", "Please enter at least one support.")
-                return
+    # 3. Parse Stiffness
+    segments = parse_stiffness(stiff_input, L_total)
+    if not segments:
+        st.warning("No valid stiffness segments found. Using default I=50,000.")
+        segments = [(0, L_total, 50000.0)]
 
-            # Auto Length = Last Support
-            L = supports[-1]
-            if L <= 0:
-                messagebox.showerror("Error", "Bridge length must be greater than zero.")
-                return
+    def get_I(x):
+        for start, end, val in segments:
+            if start <= x <= end:
+                return val
+        return segments[0][2]
 
-            truck_str = self.txt_truck.get("1.0", "end-1c").strip()
-            truck_config = []
-            for line in truck_str.split('\n'):
-                if not line.strip(): continue
-                parts = line.split(',')
-                if len(parts) == 2:
-                    truck_config.append((float(parts[0]), float(parts[1])))
-
-            if not truck_config:
-                messagebox.showerror("Error", "Please define at least one axle.")
-                return
-
-            stiff_text = self.txt_stiff.get("1.0", "end-1c")
-            segments = self.parse_stiffness_text(stiff_text, L)
-            
-            if not segments:
-                I_default = 50000.0
-                segments = [(0, L, I_default)]
-
-            def get_I(x):
-                for (start, end, val) in segments:
-                    if start <= x <= end:
-                        return val
-                return segments[0][2] 
-
-            self.status_lbl.config(text=f"Analyzing {L}ft Bridge...")
-            self.root.update()
-            
-            bridge = BridgeBeam(L, E, supports, num_elements=300)
-            bridge.set_stiffness_profile(get_I)
-            bridge.analyze_truck(truck_config)
-            
-            self.status_lbl.config(text="Plotting results...")
-            bridge.plot_envelopes()
-            self.status_lbl.config(text="Analysis Complete.")
-            
-        except ValueError:
-            messagebox.showerror("Input Error", "Check your numbers.")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = BridgeApp(root)
-    root.mainloop()
+    # 4. Run Analysis
+    st.info(f"Analyzing {L_total}ft bridge...")
+    
+    bridge = BridgeBeam(L_total, E_ksi, supports, num_elements=200)
+    bridge.set_stiffness_profile(get_I)
+    bridge.analyze_truck(truck_config)
+    
+    # 5. Show Results
+    fig = bridge.plot_envelopes()
+    st.pyplot(fig)
+    st.success("Analysis Complete!")
